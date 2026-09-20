@@ -1,0 +1,32 @@
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: apps/http/Dockerfile
+    container_name: metaverse-backend
+    ports:
+      - "3000:3000"
+    environment:
+      JWT_PASSWORD: IloveOnkar
+      DATABASE_URL: postgresql://postgres:postgres@host.docker.internal:5433/postgres
+
+  ws:
+    build:
+      context: .
+      dockerfile: apps/ws/Dockerfile
+
+    ports:
+      - "8080:8080"
+    container_name: metaverse-ws
+    environment:
+      JWT_PASSWORD: IloveOnkar
+      DATABASE_URL: postgresql://postgres:postgres@host.docker.internal:5433/postgres
+      
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    container_name: metaverse-frontend
+    ports:
+      - "5173:80"
