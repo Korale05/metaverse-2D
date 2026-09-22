@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
+import { useMediasoup } from '../hooks/useMediasoup';
 import './auth.css';
 import './game.css';
+import './call-panel.css';
 
 const HTTP_URL = `http://${window.location.hostname}:3000`;
 const WS_URL = `ws://${window.location.hostname}:8080`;
@@ -25,7 +27,7 @@ export interface LogEntry {
   id: string;
   timestamp: string;
   text: string;
-  type: 'join' | 'move' | 'leave' | 'info';
+  type: 'join' | 'move' | 'leave' | 'info' | 'PROXIMITY_UPDATE';
 }
 
 export default function Game() {
@@ -55,8 +57,11 @@ export default function Game() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
+  // mediasoup hook
+  const media = useMediasoup();
+
   // Logger helper
-  const addLog = useCallback((text: string, type: 'join' | 'move' | 'leave' | 'info' = 'info') => {
+  const addLog = useCallback((text: string, type: 'join' | 'move' | 'leave' | 'info'| 'PROXIMITY_UPDATE' = 'info') => {
     const timeStr = new Date().toLocaleTimeString();
     setLogs((prev) => [
       { id: Math.random().toString(36).substring(2, 9), timestamp: timeStr, text, type },
@@ -168,6 +173,7 @@ export default function Game() {
 
   // Leave active space
   const leaveSpace = () => {
+    media.cleanup();
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -232,6 +238,9 @@ export default function Game() {
             if (usersMap.size > 0) {
               addLog(`${usersMap.size} other user(s) currently active in this space`, 'info');
             }
+
+            // Initialize mediasoup media pipeline
+            media.initMedia(ws);
             break;
           }
 
@@ -283,6 +292,61 @@ export default function Game() {
               });
               addLog(`User ${uId.substring(0, 8)} left the space`, 'leave');
             }
+            break;
+          }
+
+          case 'PROXIMITY_UPDATE' : {
+            const nearby = payload.nearby || [];
+            media.handleProximityUpdate(nearby);
+            if (nearby.length > 0) {
+              addLog(`In call with ${nearby.length} user(s): ${nearby.map((id: string) => id.substring(0, 6)).join(', ')}`, 'PROXIMITY_UPDATE');
+            } else {
+              addLog('No nearby users', 'PROXIMITY_UPDATE');
+            }
+            break;
+          }
+
+          // ── Media signaling responses ──────────────────────
+
+          case 'router-rtp-capabilities': {
+            media.handleRouterRtpCapabilities(payload);
+            break;
+          }
+
+          case 'transport-created': {
+            media.handleTransportCreated(payload);
+            break;
+          }
+
+          case 'transport-connected': {
+            media.handleTransportConnected(payload);
+            break;
+          }
+
+          case 'produced': {
+            media.handleProduced(payload);
+            break;
+          }
+
+          case 'new-consumer': {
+            media.handleNewConsumer(payload);
+            addLog(`Receiving ${payload.kind} from ${payload.peerId?.substring(0, 6)}`, 'join');
+            break;
+          }
+
+          case 'consumer-closed': {
+            media.handleConsumerClosed(payload);
+            addLog(`Call ended with ${payload.peerId?.substring(0, 6)}`, 'leave');
+            break;
+          }
+
+          case 'producer-closed': {
+            // A specific producer closed (peer stopped a track)
+            break;
+          }
+
+          case 'error': {
+            console.error('Server error:', payload.message);
             break;
           }
 
@@ -691,6 +755,61 @@ export default function Game() {
               </div>
             </div>
 
+            {/* ─── Call Panel ──────────────────────────────── */}
+            {(media.inCall || media.mediaReady) && (
+              <div className="call-panel">
+                <div className="call-panel-header">
+                  <div className="call-panel-title">
+                    📞 Proximity Call
+                  </div>
+                  <div className={`call-indicator ${media.inCall ? 'active' : 'inactive'}`}>
+                    <span className="call-indicator-dot" />
+                    {media.inCall ? `In call with ${media.nearbyPeers.length}` : 'Waiting for nearby'}
+                  </div>
+                </div>
+
+                {/* Controls */}
+                <div className="call-controls">
+                  <button
+                    className={`call-control-btn mute-btn ${media.audioMuted ? 'muted' : ''}`}
+                    onClick={media.toggleAudio}
+                    title={media.audioMuted ? 'Unmute' : 'Mute'}
+                  >
+                    {media.audioMuted ? '🔇' : '🎤'}
+                  </button>
+                  <button
+                    className={`call-control-btn video-btn ${media.videoOff ? 'video-off' : ''}`}
+                    onClick={media.toggleVideo}
+                    title={media.videoOff ? 'Turn Camera On' : 'Turn Camera Off'}
+                  >
+                    {media.videoOff ? '📷' : '📹'}
+                  </button>
+                  <div className={`media-status ${media.mediaReady ? 'ready' : 'loading'}`}>
+                    {media.mediaReady ? '✅ Media ready' : '⏳ Setting up...'}
+                  </div>
+                </div>
+
+                {/* Video tiles */}
+                <div className="call-video-grid">
+                  {/* Local video */}
+                  {media.localStream && (
+                    <div className="call-video-tile local-tile">
+                      <LocalVideo stream={media.localStream} videoOff={media.videoOff} />
+                      <span className="call-video-label me-label">You</span>
+                    </div>
+                  )}
+
+                  {/* Remote videos */}
+                  {Array.from(media.remoteStreams.entries()).map(([peerId, stream]) => (
+                    <div key={peerId} className="call-video-tile">
+                      <RemoteVideo stream={stream} />
+                      <span className="call-video-label">{peerId.substring(0, 6)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Sidebar: Active Members & Real-time Logs */}
             <div className="arena-sidebar">
               {/* Creator Rules & Permissions Notice */}
@@ -753,4 +872,41 @@ export default function Game() {
       </main>
     </div>
   );
+}
+
+// ─── Helper: Local Video Element ─────────────────────────────────────────────
+
+function LocalVideo({ stream, videoOff }: { stream: MediaStream; videoOff: boolean }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  if (videoOff) {
+    return (
+      <div className="call-video-placeholder">
+        <span>📷</span>
+        <span className="call-video-placeholder-text">Camera off</span>
+      </div>
+    );
+  }
+
+  return <video ref={videoRef} autoPlay playsInline muted />;
+}
+
+// ─── Helper: Remote Video Element ────────────────────────────────────────────
+
+function RemoteVideo({ stream }: { stream: MediaStream }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  return <video ref={videoRef} autoPlay playsInline />;
 }

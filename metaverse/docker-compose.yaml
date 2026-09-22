@@ -8,21 +8,25 @@ services:
     ports:
       - "3000:3000"
     environment:
-      JWT_PASSWORD: IloveOnkar
+      JWT_PASSWORD: "${JWT_PASSWORD}"
       DATABASE_URL: postgresql://postgres:postgres@host.docker.internal:5433/postgres
 
   ws:
     build:
       context: .
       dockerfile: apps/ws/Dockerfile
-
     ports:
       - "8080:8080"
+      - "40000-40100:40000-40100/udp"
     container_name: metaverse-ws
     environment:
-      JWT_PASSWORD: IloveOnkar
+      JWT_PASSWORD: "${JWT_PASSWORD}"
       DATABASE_URL: postgresql://postgres:postgres@host.docker.internal:5433/postgres
-      
+      MEDIASOUP_LISTEN_IP: "0.0.0.0"
+      MEDIASOUP_ANNOUNCED_IP: "${MEDIASOUP_ANNOUNCED_IP:-127.0.0.1}"
+      RTC_MIN_PORT: "40000"
+      RTC_MAX_PORT: "40100"
+
   frontend:
     build:
       context: .
